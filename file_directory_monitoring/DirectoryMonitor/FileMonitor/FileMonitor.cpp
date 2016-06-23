@@ -30,8 +30,7 @@ int main()
 
         std::cout << "Hit <Enter> to quit\n";
         getchar();
-        monitor.SetStop();
-        monitor.GetWorkerThread()->join();
+        monitor.Stop();
     }
     catch (const std::exception& e)
     {

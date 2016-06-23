@@ -23,27 +23,21 @@ DirMonitor::DirMonitor(const fs::path& dir, std::function<void(FilesContainer&)>
     m_worker.reset(new boost::thread(boost::bind(&DirMonitor::TreadFunc, this)));
 }
 
-boost::thread* DirMonitor::GetWorkerThread()
-{
-    return m_worker.get();
-}
-
 void DirMonitor::TreadFunc()
 {
-    HANDLE dwChangeHandle;
-    dwChangeHandle = FindFirstChangeNotification(
-        m_dir.c_str(),                
+    m_evtHandles.fsNotifyHandle = FindFirstChangeNotification(
+        m_dir.c_str(),
         TRUE,                         // watch subtree 
         FILE_NOTIFY_CHANGE_FILE_NAME);
 
-    m_auxHandles[0] = dwChangeHandle;
-    m_auxHandles[1] = ::CreateEvent(NULL, TRUE, FALSE, TEXT("StopEvent"));
+    m_evtHandles.stopHandle = ::CreateEvent(NULL, TRUE, FALSE, TEXT("StopEvent"));
 
     std::vector<unsigned char> buf(sizeof(FILE_NOTIFY_INFORMATION) * 1024);
     DWORD dwBytesReturned = 0;
     OVERLAPPED overlapped;
     ::ZeroMemory(&overlapped, sizeof(OVERLAPPED));
 
+    // Init dir. changes state.
     ReadDirectoryChangesW(m_dirHandle.get(), (LPVOID)&buf.at(0), buf.size(), TRUE, 
         FILE_NOTIFY_CHANGE_FILE_NAME, &dwBytesReturned, &overlapped, NULL);
 
@@ -51,13 +45,16 @@ void DirMonitor::TreadFunc()
 
     while (true)
     {
-        DWORD dwWaitStatus = WaitForMultipleObjects(2, (HANDLE*)m_auxHandles, FALSE, INFINITE);
+        DWORD dwWaitStatus = WaitForMultipleObjects(sizeof(m_evtHandles) / sizeof(HANDLE), 
+            reinterpret_cast<HANDLE*>(&m_evtHandles), FALSE, INFINITE);
+
         switch (dwWaitStatus)
         {
-        case WAIT_OBJECT_0:
+        case WAIT_OBJECT_0: // NotifyChange
 
             files.clear();
-            if (ReadDirectoryChangesW(m_dirHandle.get(), (LPVOID)&buf.at(0), buf.size(), TRUE, FILE_NOTIFY_CHANGE_FILE_NAME, &dwBytesReturned, &overlapped, NULL))
+            if (ReadDirectoryChangesW(m_dirHandle.get(), (LPVOID)&buf.at(0), buf.size(), TRUE, FILE_NOTIFY_CHANGE_FILE_NAME, 
+                &dwBytesReturned, &overlapped, NULL))
             {
                 size_t nextOffset = 0;
                 PFILE_NOTIFY_INFORMATION itemPtr = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(&buf.at(0));
@@ -76,16 +73,19 @@ void DirMonitor::TreadFunc()
                     nextOffset += itemPtr->NextEntryOffset;
 
                 } 
-                while (itemPtr->NextEntryOffset != NULL);
+                while (NULL != itemPtr->NextEntryOffset);
             }
             
             m_callback(files);
 
-            FindNextChangeNotification(m_auxHandles[0]);
+            if (NULL == FindNextChangeNotification(m_evtHandles.fsNotifyHandle))
+            {
+                throw std::runtime_error("Cannot re-initialize ChangeNotification handle.");
+            }
 
             break;
 
-        case WAIT_OBJECT_0 + 1:
+        case WAIT_OBJECT_0 + 1: // Stop evt.
             return;
 
         default:
@@ -96,18 +96,19 @@ void DirMonitor::TreadFunc()
 
 DirMonitor::~DirMonitor()
 {
-    if (m_auxHandles[0] && m_auxHandles[0] != INVALID_HANDLE_VALUE)
+    if (m_evtHandles.fsNotifyHandle && m_evtHandles.fsNotifyHandle != INVALID_HANDLE_VALUE)
     {
-        FindCloseChangeNotification(m_auxHandles[0]);
+        FindCloseChangeNotification(m_evtHandles.fsNotifyHandle);
     }
 
-    if (m_auxHandles[1] && m_auxHandles[1] != INVALID_HANDLE_VALUE)
+    if (m_evtHandles.stopHandle && m_evtHandles.stopHandle != INVALID_HANDLE_VALUE)
     {
-        FindCloseChangeNotification(m_auxHandles[1]);
+        FindCloseChangeNotification(m_evtHandles.stopHandle);
     }
 }
 
-void DirMonitor::SetStop()
+void DirMonitor::Stop()
 {
-    SetEvent(m_auxHandles[1]);
+    SetEvent(m_evtHandles.stopHandle);
+    m_worker->join();
 }
