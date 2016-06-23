@@ -103,7 +103,7 @@ DirMonitor::~DirMonitor()
 
     if (m_evtHandles.stopHandle && m_evtHandles.stopHandle != INVALID_HANDLE_VALUE)
     {
-        FindCloseChangeNotification(m_evtHandles.stopHandle);
+        CloseHandle(m_evtHandles.stopHandle);
     }
 }
 
